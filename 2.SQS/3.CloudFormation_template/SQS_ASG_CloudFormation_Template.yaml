@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Order Processing System with SQS, EC2 Auto Scaling, and S3
+
+Resources:
+  # ----------------------------
+  # SQS Queue
+  # ----------------------------
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: OrderQueue
+
+  # ----------------------------
+  # S3 Bucket for Consumer Script
+  # ----------------------------
+  ConsumerBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub consumer-script-${AWS::AccountId}-${AWS::Region}
+
+  # ----------------------------
+  # IAM Role for EC2
+  # ----------------------------
+  SQSConsumerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SQSConsumerRole
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  SQSConsumerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SQSConsumerRole
+
+  # ----------------------------
+  # Launch Template for EC2
+  # ----------------------------
+  ConsumerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: ConsumerLaunchTemplate
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        ImageId: !Ref LatestAmiId
+        IamInstanceProfile:
+          Arn: !GetAtt SQSConsumerInstanceProfile.Arn
+        UserData: !Base64 |
+          #!/bin/bash
+          yum update -y
+          yum install -y awscli python3 python3-pip
+          pip3 install boto3
+          mkdir -p /home/ec2-user/scripts
+          cd /home/ec2-user/scripts
+          aws s3 cp s3://consumer-script-${AWS::AccountId}-${AWS::Region}/consumer.py .
+          python3 consumer.py > /var/log/consumer.log 2>&1
+
+  # ----------------------------
+  # Auto Scaling Group
+  # ----------------------------
+  ConsumerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - subnet-xxxxxxxx   # replace with your subnet IDs
+        - subnet-yyyyyyyy
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ConsumerLaunchTemplate
+        Version: !GetAtt ConsumerLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 5
+      DesiredCapacity: 1
+
+  # ----------------------------
+  # Scaling Policy
+  # ----------------------------
+  ConsumerScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref ConsumerASG
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        TargetValue: 5
+        CustomizedMetricSpecification:
+          MetricName: ApproximateNumberOfMessagesVisible
+          Namespace: AWS/SQS
+          Statistic: Average
+          Dimensions:
+            - Name: QueueName
+              Value: !GetAtt OrderQueue.QueueName
+
+# ----------------------------
+# Parameters
+# ----------------------------
+Parameters:
+  LatestAmiId:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+    Description: Latest Amazon Linux 2023 AMI from SSM
+
+Outputs:
+  QueueURL:
+    Description: The URL of the SQS Queue
+    Value: !Ref OrderQueue
+  BucketName:
+    Description: The S3 bucket for consumer.py
+    Value: !Ref ConsumerBucket
+  ASGName:
+    Description: Auto Scaling Group Name
+    Value: !Ref ConsumerASG

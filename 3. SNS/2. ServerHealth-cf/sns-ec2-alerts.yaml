@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Server Health Alert System with SNS + CloudWatch Alarm.
+  Sends an email when EC2 CPU utilization is too high.
+
+Parameters:
+  AlertEmail:
+    Type: String
+    Description: Email address to receive SNS alerts.
+
+  InstanceId:
+    Type: String
+    Description: EC2 Instance ID to monitor (e.g., i-0123456789abcdef0).
+
+Resources:
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: ServerAlerts
+
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+      TopicArn: !Ref SNSTopic
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: HighCPUUsage
+      AlarmDescription: "CPU utilization > 80% for 5 minutes"
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref InstanceId
+      Statistic: Average
+      Period: 300   # 5 minutes
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref SNSTopic
+      TreatMissingData: notBreaching
+
+Outputs:
+  TopicARN:
+    Description: ARN of the created SNS topic
+    Value: !Ref SNSTopic
+  AlarmName:
+    Description: CloudWatch Alarm name
+    Value: !Ref CPUAlarmHigh
